@@ -1,68 +1,65 @@
 import streamlit as st
+import pandas as pd
+import plotly.express as px
 
-# 1. 계산 핵심 로직 (함수화)
-def calculate_liquidation_price(side, entry_price, leverage, mmr=0.01):
-    """
-    MEXC 격리 마진 기준 청산가 계산
-    mmr: 유지 증거금율 (고배율일수록 높게 설정, 기본 1% 권장)
-    """
-    if side == "LONG":
-        return entry_price * (1 - (1 / leverage) + mmr)
-    else:
-        return entry_price * (1 + (1 / leverage) - mmr)
+# --- 1. 페이지 설정 ---
+st.set_page_config(page_title="Provident Trading Calc", layout="wide")
+st.title("🧮 Futures Position & Liquidation Calculator")
 
-def calculate_risk_metrics(margin, leverage, entry_price, stop_loss_price):
-    """
-    리스크 관리 계산 (손절가 기준 손실 금액 및 비율)
-    """
-    position_size = margin * leverage
-    quantity = position_size / entry_price
+# --- 2. 사이드바 리스크 설정 ---
+st.sidebar.header("⚙️ Risk Setting")
+total_seed = st.sidebar.number_input("시작 자산 ($)", value=5000.0) #
+one_r = total_seed * 0.02 # 2% 리스크 ($100)
+
+# --- 3. 탭 구성 (계산기 탭 추가) ---
+tab1, tab2, tab3 = st.tabs(["🔢 Position & Liq Calc", "📊 MEXC Journal", "🚀 2030 Roadmap"])
+
+with tab1:
+    st.header("📉 선물 진입 및 청산가 상세 계산")
     
-    # 손실 금액 계산
-    loss_amount = abs(entry_price - stop_loss_price) * quantity
-    loss_percentage = (loss_amount / margin) * 100
+    col1, col2 = st.columns(2)
     
-    return position_size, loss_amount, loss_percentage
+    with col1:
+        st.subheader("1️⃣ 평단가(Avg Price) 계산")
+        st.caption("5분할 진입 시 각 차수별 가격과 물량을 입력하세요.") #
+        
+        # 입력 데이터 구조
+        entry_data = []
+        for i in range(1, 6):
+            c_a, c_b = st.columns(2)
+            p = c_a.number_input(f"{i}차 진입가", value=0.0, key=f"p{i}")
+            q = c_b.number_input(f"{i}차 수량(Qty)", value=0.0, key=f"q{i}")
+            if p > 0 and q > 0:
+                entry_data.append({'price': p, 'qty': q})
+        
+        if entry_data:
+            df_entry = pd.DataFrame(entry_data)
+            # 평단가 공식: (가격 * 수량)의 합 / 총 수량
+            total_qty = df_entry['qty'].sum()
+            avg_price = (df_entry['price'] * df_entry['qty']).sum() / total_qty
+            st.info(f"✅ **최종 평단가: ${avg_price:,.4f}**")
+            st.info(f"📦 **총 포지션 규모: {total_qty:,.2f} Units**")
 
-# 2. Streamlit UI 구성
-st.set_page_config(page_title="MEXC 통합 트레이딩 계산기", layout="wide")
-st.title("📊 통합 리스크 & 청산가 계산기")
-
-# 사이드바: 공통 설정 (레버리지, 증거금)
-st.sidebar.header("⚙️ 기본 설정")
-side = st.sidebar.radio("포지션 방향", ["LONG", "SHORT"])
-leverage = st.sidebar.select_slider("레버리지 (Leverage)", options=[20, 50, 100, 125, 150, 200])
-margin = st.sidebar.number_input("투자 증거금 (Margin, USDT)", value=1000)
-
-# 메인 화면: 입력 정보
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("📥 진입 정보")
-    entry_price = st.number_input("진입 평단가 (Entry Price)", value=65000.0, step=100.0)
-    stop_loss_price = st.number_input("손절가 (Stop Loss)", value=63000.0, step=100.0)
-
-# 3. 실시간 계산 수행 (레버리지나 값이 바뀔 때마다 자동 실행됨)
-liq_price = calculate_liquidation_price(side, entry_price, leverage)
-pos_size, loss_amt, loss_pct = calculate_risk_metrics(margin, leverage, entry_price, stop_loss_price)
-
-with col2:
-    st.subheader("📉 청산 및 리스크 결과")
-    
-    # 결과 요약 카드형태 표시
-    st.error(f"⚠️ 예상 청산가: {liq_price:,.2f} USDT")
-    
-    res_col1, res_col2 = st.columns(2)
-    res_col1.metric("총 포지션 규모", f"{pos_size:,.0f} USDT")
-    res_col1.metric("예상 손실액", f"-{loss_amt:,.2f} USDT")
-    
-    res_col2.metric("레버리지 배율", f"{leverage}x")
-    res_col2.metric("증거금 대비 손실률", f"{loss_pct:.2f}%", delta=f"-{loss_pct:.2f}%", delta_color="inverse")
-
-# 4. 추가 팁 (유지 증거금 설명)
-with st.expander("ℹ️ 계산 기준 안내"):
-    st.write("""
-    - **청산가**: MEXC 격리 마진 공식을 기준으로 하며, 유지 증거금율(MMR) 1%를 가정합니다.
-    - **통합 관리**: 레버리지를 슬라이더로 조절하면 청산가와 리스크 지표가 즉시 업데이트됩니다.
-    - **주의**: 실제 거래소의 청산가는 시장 수수료 및 펀딩비에 따라 미세하게 다를 수 있습니다.
-    """)
+    with col2:
+        st.subheader("2️⃣ 청산가(Liq Price) 및 레버리지")
+        leverage = st.slider("사용 레버리지 (x)", 1, 100, 10) #
+        side = st.radio("포지션 방향", ["Long", "Short"])
+        
+        if entry_data:
+            # 단순화된 격리(Isolated) 청산가 계산 공식
+            # Long: Entry * (1 - 1/Lev + MaintenanceMargin)
+            # Short: Entry * (1 + 1/Lev - MaintenanceMargin)
+            mmr = 0.005 # 유지 증거금율 0.5% 가정
+            
+            if side == "Long":
+                liq_price = avg_price * (1 - (1/leverage) + mmr)
+            else:
+                liq_price = avg_price * (1 + (1/leverage) - mmr)
+                
+            st.error(f"🚨 **예상 청산가 ({side}): ${liq_price:,.4f}**")
+            
+            # 리스크 경고
+            stop_loss_1r = avg_price * 0.99 if side == "Long" else avg_price * 1.01
+            st.warning(f"⚠️ 사용자 원칙 손절가 (-1%): ${stop_loss_1r:,.4f}") #
+            
+            if (side == "Long" and liq_price > stop_loss_1r) or (
