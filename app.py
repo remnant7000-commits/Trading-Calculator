@@ -1,127 +1,68 @@
 import streamlit as st
-import pandas as pd
 
-# 페이지 설정 (제목 및 아이콘)
-st.set_page_config(page_title="Futures Trading Calculator", page_icon="📈")
+# 1. 계산 핵심 로직 (함수화)
+def calculate_liquidation_price(side, entry_price, leverage, mmr=0.01):
+    """
+    MEXC 격리 마진 기준 청산가 계산
+    mmr: 유지 증거금율 (고배율일수록 높게 설정, 기본 1% 권장)
+    """
+    if side == "LONG":
+        return entry_price * (1 - (1 / leverage) + mmr)
+    else:
+        return entry_price * (1 + (1 / leverage) - mmr)
 
-# 스타일링 (모바일 가독성 향상)
-st.markdown("""
-<style>
-    .big-font { font-size:20px !important; font-weight: bold; }
-    .result-box { padding: 15px; background-color: #f0f2f6; border-radius: 10px; margin-bottom: 20px; }
-</style>
-""", unsafe_allow_html=True)
-
-st.title("📈 선물 트레이딩 통합 계산기")
-st.caption("컴퓨터 & 모바일 호환 (BTC, ETH, SOL 등 공통)")
-
-# 탭 구분 (RR 계산기 / 청산가 계산기)
-tab1, tab2 = st.tabs(["🎯 리스크/RR 계산기", "☠️ 청산가 계산기"])
-
-# --- 탭 1: 리스크/RR 계산기 ---
-with tab1:
-    st.header("리스크 관리 & RR 설정")
-
-    # 1. 입력 섹션
-    col1, col2 = st.columns(2)
-    with col1:
-        direction = st.radio("포지션 방향", ["LONG", "SHORT"], index=0, key="rr_dir")
-        entry_price = st.number_input("진입가 (Entry Price)", value=88000.0, step=1.0, format="%.2f")
-    with col2:
-        position_size = st.number_input("포지션 규모 (USD)", value=20000.0, step=100.0)
-        risk_amount = st.number_input("리스크 감수 금액 (USD)", value=30.0, step=1.0)
-
-    # 2. 계산 로직
-    if position_size > 0 and entry_price > 0:
-        # 변동폭 계산 (Risk Amount / Position Size)
-        risk_ratio = risk_amount / position_size
-        price_move_1r = entry_price * risk_ratio
-        
-        # 손절가(SL) 계산
-        if direction == "LONG":
-            stop_loss = entry_price - price_move_1r
-        else:
-            stop_loss = entry_price + price_move_1r
-            
-        # 3. 결과 표시
-        st.markdown("---")
-        st.markdown(f"#### 📊 분석 결과")
-        
-        c1, c2, c3 = st.columns(3)
-        c1.metric("가격 이동폭 (1R)", f"{price_move_1r:.2f}")
-        c2.metric("손절가 (Stop Loss)", f"{stop_loss:.2f}")
-        c3.metric("리스크 비율", f"{risk_ratio*100:.2f}%")
-
-        # 4. RR 배수 테이블 생성
-        st.subheader("RR 배수별 익절가 (Take Profit)")
-        
-        rr_data = []
-        for i in range(1, 11): # 1~10배
-            if direction == "LONG":
-                tp_price = entry_price + (price_move_1r * i)
-            else:
-                tp_price = entry_price - (price_move_1r * i)
-            
-            rr_data.append({
-                "RR 배수": f"1:{i}",
-                "익절가 (TP)": f"{tp_price:.2f}",
-                "수익금 (예상)": f"${risk_amount * i:.2f}"
-            })
-        
-        df_rr = pd.DataFrame(rr_data)
-        st.dataframe(df_rr, use_container_width=True, hide_index=True)
-
-# --- 탭 2: 청산가 계산기 ---
-with tab2:
-    st.header("청산가 계산 (단순화 모델)")
+def calculate_risk_metrics(margin, leverage, entry_price, stop_loss_price):
+    """
+    리스크 관리 계산 (손절가 기준 손실 금액 및 비율)
+    """
+    position_size = margin * leverage
+    quantity = position_size / entry_price
     
-    # 1. 입력 섹션
-    t2_col1, t2_col2 = st.columns(2)
-    with t2_col1:
-        liq_direction = st.radio("방향", ["LONG", "SHORT"], index=0, key="liq_dir")
-        liq_entry = st.number_input("진입가", value=87500.0, step=1.0, format="%.2f", key="liq_entry")
-        leverage = st.number_input("레버리지 (x)", value=200, step=1, key="liq_lev")
-        
-    with t2_col2:
-        initial_notional = st.number_input("최초 포지션 (USD)", value=5000.0, step=100.0)
-        add_on_notional = st.number_input("추가 매수 (USD)", value=10000.0, step=100.0)
-        mmr = st.number_input("유지증거금 비율(MMR)", value=0.005, step=0.001, format="%.4f", help="0.5%면 0.005 입력")
-
-    total_notional = initial_notional + add_on_notional
+    # 손실 금액 계산
+    loss_amount = abs(entry_price - stop_loss_price) * quantity
+    loss_percentage = (loss_amount / margin) * 100
     
-    # 2. 계산 로직 (표준 격리/교차 단순화 공식 적용)
-    # 주의: 거래소마다 청산 공식이 미세하게 다르므로 일반적인 근사치 공식 사용
-    if total_notional > 0 and liq_entry > 0 and leverage > 0:
-        
-        # 초기 증거금 (Initial Margin)
-        im = total_notional / leverage
-        # 유지 증거금 (Maintenance Margin) = 전체 사이즈 * MMR
-        mm = total_notional * mmr
-        
-        # 청산가 계산 로직 (격리 마진 기준 근사치)
-        # Long Liq = Entry * (1 - (1/Lev) + MMR)
-        # Short Liq = Entry * (1 + (1/Lev) - MMR)
-        
-        if liq_direction == "LONG":
-            liq_price = liq_entry * (1 - (1/leverage) + mmr)
-        else:
-            liq_price = liq_entry * (1 + (1/leverage) - mmr)
+    return position_size, loss_amount, loss_percentage
 
-        # 진입가 대비 청산까지 %
-        diff_percent = ((liq_price - liq_entry) / liq_entry) * 100
+# 2. Streamlit UI 구성
+st.set_page_config(page_title="MEXC 통합 트레이딩 계산기", layout="wide")
+st.title("📊 통합 리스크 & 청산가 계산기")
 
-        # 3. 결과 표시
-        st.markdown("---")
-        st.markdown(f"#### ☠️ 청산 분석 결과")
-        
-        res_col1, res_col2 = st.columns(2)
-        
-        with res_col1:
-            st.error(f"예상 청산가: {liq_price:.2f}")
-            st.metric("총 포지션 규모", f"${total_notional:,.0f}")
-            
-        with res_col2:
-            st.metric("청산까지 거리 (%)", f"{diff_percent:.2f}%")
-            st.metric("필요 유지증거금", f"${mm:.2f}")
+# 사이드바: 공통 설정 (레버리지, 증거금)
+st.sidebar.header("⚙️ 기본 설정")
+side = st.sidebar.radio("포지션 방향", ["LONG", "SHORT"])
+leverage = st.sidebar.select_slider("레버리지 (Leverage)", options=[20, 50, 100, 125, 150, 200])
+margin = st.sidebar.number_input("투자 증거금 (Margin, USDT)", value=1000)
 
-    st.info("💡 참고: 실제 거래소의 청산가는 수수료 및 펀딩비 등의 변수로 인해 미세한 차이가 있을 수 있습니다.")
+# 메인 화면: 입력 정보
+col1, col2 = st.columns(2)
+
+with col1:
+    st.subheader("📥 진입 정보")
+    entry_price = st.number_input("진입 평단가 (Entry Price)", value=65000.0, step=100.0)
+    stop_loss_price = st.number_input("손절가 (Stop Loss)", value=63000.0, step=100.0)
+
+# 3. 실시간 계산 수행 (레버리지나 값이 바뀔 때마다 자동 실행됨)
+liq_price = calculate_liquidation_price(side, entry_price, leverage)
+pos_size, loss_amt, loss_pct = calculate_risk_metrics(margin, leverage, entry_price, stop_loss_price)
+
+with col2:
+    st.subheader("📉 청산 및 리스크 결과")
+    
+    # 결과 요약 카드형태 표시
+    st.error(f"⚠️ 예상 청산가: {liq_price:,.2f} USDT")
+    
+    res_col1, res_col2 = st.columns(2)
+    res_col1.metric("총 포지션 규모", f"{pos_size:,.0f} USDT")
+    res_col1.metric("예상 손실액", f"-{loss_amt:,.2f} USDT")
+    
+    res_col2.metric("레버리지 배율", f"{leverage}x")
+    res_col2.metric("증거금 대비 손실률", f"{loss_pct:.2f}%", delta=f"-{loss_pct:.2f}%", delta_color="inverse")
+
+# 4. 추가 팁 (유지 증거금 설명)
+with st.expander("ℹ️ 계산 기준 안내"):
+    st.write("""
+    - **청산가**: MEXC 격리 마진 공식을 기준으로 하며, 유지 증거금율(MMR) 1%를 가정합니다.
+    - **통합 관리**: 레버리지를 슬라이더로 조절하면 청산가와 리스크 지표가 즉시 업데이트됩니다.
+    - **주의**: 실제 거래소의 청산가는 시장 수수료 및 펀딩비에 따라 미세하게 다를 수 있습니다.
+    """)
